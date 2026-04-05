@@ -12,16 +12,16 @@ Include `ascii_io.h` before `pmath.h` in every translation unit.
 
 ## Table of Contents
 
-- [ascii\_io — ASCII Console I/O](#ascii_io)
+- [ascii_io — ASCII Console I/O](#ascii_io--ascii-console-io)
   - [Platform Hooks](#platform-hooks)
-  - [Compile-time Flags](#ascii-flags)
+  - [Compile-time Flags](#compile-time-flags)
   - [String Output](#string-output)
   - [Integer Output](#integer-output)
   - [Float Output](#float-output)
   - [BCD Output](#bcd-output)
   - [Input and Parse](#input-and-parse)
-- [pmath — Portable Math](#pmath)
-  - [Compile-time Flags](#pmath-flags)
+- [pmath — Portable Math](#pmath--portable-math)
+  - [Compile-time Flags](#compile-time-flags-1)
   - [Number Format](#number-format)
   - [Constants](#constants)
   - [Literal Conversion](#literal-conversion)
@@ -33,14 +33,14 @@ Include `ascii_io.h` before `pmath.h` in every translation unit.
   - [Angle Helpers](#angle-helpers)
   - [Square Root](#square-root)
   - [Trigonometry](#trigonometry)
-  - [Printing — pm\_print](#pm_print)
-- [Using Both Libraries Together](#together)
+  - [Printing — pm_print](#printing--pm_print)
+- [Using Both Libraries Together](#using-both-libraries-together)
   - [Valid Flag Combinations](#valid-combinations)
-  - [The Illegal Combination](#illegal-combination)
+  - [The Illegal Combination](#the-illegal-combination)
 
 ---
 
-## ascii_io — ASCII Console I/O {#ascii_io}
+## ascii_io — ASCII Console I/O
 
 **File:** `ascii_io.h`, `ascii_io.c`  
 **Standard:** ANSI C89/C90  
@@ -53,7 +53,7 @@ goes through `ASCII_GETC`. No heap, no stdio, no stdlib.
 
 ---
 
-### Platform Hooks {#platform-hooks}
+### Platform Hooks
 
 You must provide an output character function. Input is only needed
 when `ASCII_NO_INPUT` is not defined.
@@ -81,7 +81,7 @@ declarations are suppressed entirely.
 
 ---
 
-### Compile-time Flags {#ascii-flags}
+### Compile-time Flags
 
 Define any of these before including `ascii_io.h` to shrink the binary.
 
@@ -96,7 +96,7 @@ Define any of these before including `ascii_io.h` to shrink the binary.
 
 ---
 
-### String Output {#string-output}
+### String Output
 
 ```c
 void ascii_puts(const char *s);           /* NUL-terminated, NULL-safe */
@@ -120,7 +120,7 @@ ABC
 
 ---
 
-### Integer Output {#integer-output}
+### Integer Output
 
 ```c
 /* Unsigned decimal */
@@ -151,7 +151,7 @@ through unsigned arithmetic before negating.
 
 ---
 
-### Float Output {#float-output}
+### Float Output
 
 ```c
 /* Omitted when ASCII_NO_FLOAT is defined */
@@ -176,7 +176,7 @@ arithmetic in fixed-point mode) to avoid it entirely.
 
 ---
 
-### BCD Output {#bcd-output}
+### BCD Output
 
 ```c
 /* Omitted when ASCII_NO_BCD is defined */
@@ -194,7 +194,7 @@ ascii_put_bcd16(0x1999);  ascii_nl();   /* 1999 */
 
 ---
 
-### Input and Parse {#input-and-parse}
+### Input and Parse
 
 All input functions are omitted when `ASCII_NO_INPUT` is defined.
 
@@ -269,7 +269,7 @@ if (ascii_read_u16(&x)) {
 
 ---
 
-## pmath — Portable Math {#pmath}
+## pmath — Portable Math
 
 **File:** `pmath.h`, `pmath.c`  
 **Standard:** C99  
@@ -283,7 +283,7 @@ build flags. The same application source compiles unchanged in both modes.
 
 ---
 
-### Compile-time Flags {#pmath-flags}
+### Compile-time Flags
 
 | Flag | Effect |
 |------|--------|
@@ -304,7 +304,7 @@ build flags. The same application source compiles unchanged in both modes.
 
 ---
 
-### Number Format {#number-format}
+### Number Format
 
 `num_t` is the universal numeric type. All pmath functions accept and
 return `num_t`. You never need to know whether it is fixed or float
@@ -322,7 +322,7 @@ typedef int16_t fixed_t;   /* always available */
 
 ---
 
-### Constants {#constants}
+### Constants
 
 All constants are in `num_t` format and resolve at compile time.
 
@@ -345,7 +345,7 @@ num_t unit      = PM_ONE;
 
 ---
 
-### Literal Conversion {#literal-conversion}
+### Literal Conversion
 
 `PM_F(x)` converts a compile-time float constant to `num_t`. Use it
 for initialisers and configuration — not inside inner loops on 8-bit
@@ -407,7 +407,7 @@ also pre-computed as integer literals under this flag, so `pm_sin`,
 
 ---
 
-### Multiply and Divide {#multiply-and-divide}
+### Multiply and Divide
 
 Use `pm_mul` and `pm_div` for mixed-mode portable code. In fixed mode
 they use a 32-bit intermediate to keep the binary point correct. In
@@ -434,7 +434,7 @@ in the wrong Q format. Always go through `pm_mul`.
 
 ---
 
-### Type Conversions {#type-conversions}
+### Type Conversions
 
 ```c
 int16_t pm_ftoi(num_t x);    /* num_t -> int16_t  (macro) */
@@ -465,7 +465,7 @@ num_t p = pm_from_float(3.14f);   /* PM_PI equivalent */
 
 ---
 
-### Arithmetic {#arithmetic}
+### Arithmetic
 
 All inline, no function call overhead.
 
@@ -490,7 +490,7 @@ ascii_put_i16(pm_sign(-PM_ONE));  ascii_nl();  /* -1 */
 
 ---
 
-### Floor / Ceil / Round {#floor-ceil-round}
+### Floor / Ceil / Round
 
 ```c
 num_t pm_floor(num_t x);
@@ -512,7 +512,7 @@ pm_print(pm_round(PM_F( 2.4f)), 4);  /*  2.0000 */
 
 ---
 
-### Linear Interpolation {#linear-interpolation}
+### Linear Interpolation
 
 ```c
 num_t pm_lerp(num_t a, num_t b, num_t t);
@@ -535,7 +535,7 @@ ascii_nl();
 
 ---
 
-### Angle Helpers {#angle-helpers}
+### Angle Helpers
 
 ```c
 num_t pm_wrap_angle(num_t x);      /* wrap radians to [0, 2*pi) */
@@ -566,7 +566,7 @@ ascii_nl();
 
 ---
 
-### Square Root {#square-root}
+### Square Root
 
 ```c
 /* Omitted when PMATH_NO_SQRT is defined */
@@ -591,7 +591,7 @@ pm_print(pm_sqrt(PM_HALF),    4);  /* 0.7070 */  ascii_nl();
 
 ---
 
-### Trigonometry {#trigonometry}
+### Trigonometry
 
 ```c
 /* Omitted when PMATH_NO_TRIG is defined */
@@ -633,7 +633,7 @@ ascii_nl();
 
 ---
 
-### Printing — pm_print {#pm_print}
+### Printing — pm_print
 
 ```c
 void pm_print(num_t v, uint8_t decimals);
@@ -665,7 +665,7 @@ print correct digits down to the LSB and zeros beyond.
 
 ---
 
-## Using Both Libraries Together {#together}
+## Using Both Libraries Together
 
 ### Include order
 
@@ -677,7 +677,7 @@ Always include `ascii_io.h` before `pmath.h`. Both headers share a
 #include "pmath.h"
 ```
 
-### Valid Flag Combinations {#valid-combinations}
+### Valid Flag Combinations
 
 All combinations in this table build and run correctly.
 
@@ -743,7 +743,7 @@ int main(void)
 }
 ```
 
-### The Illegal Combination {#illegal-combination}
+### The Illegal Combination
 
 This combination is caught at compile time with a `#error`:
 
