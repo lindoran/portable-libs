@@ -1,18 +1,23 @@
 # Portable Embedded Libraries Reference
 
-Two companion libraries for 8/16-bit targets with no stdlib dependency.
-Include `ascii_io.h` before `pmath.h` in every translation unit.
+Three companion libraries for 8/16-bit targets with no stdlib dependency.
 
 ```c
-#include "ascii_io.h"
-#include "pmath.h"
+#include "ascii_io.h"   /* always first */
+#include "pmath.h"      /* second       */
+#include "cbuf.h"       /* third        */
 ```
+
+Each header pulls in `portable_types.h` automatically. You never need to
+include it explicitly unless you want types available before including any
+library header.
 
 ---
 
 ## Table of Contents
 
-- [ascii_io — ASCII Console I/O](#ascii_io--ascii-console-io)
+- [portable\_types.h — Integer Types](#portable_typesh--integer-types)
+- [ascii\_io — ASCII Console I/O](#ascii_io--ascii-console-io)
   - [Platform Hooks](#platform-hooks)
   - [Compile-time Flags](#compile-time-flags)
   - [String Output](#string-output)
@@ -22,30 +27,86 @@ Include `ascii_io.h` before `pmath.h` in every translation unit.
   - [Input and Parse](#input-and-parse)
 - [pmath — Portable Math](#pmath--portable-math)
   - [Compile-time Flags](#compile-time-flags-1)
+  - [Fixed-point format options](#fixed-point-format-options)
   - [Number Format](#number-format)
   - [Constants](#constants)
   - [Literal Conversion](#literal-conversion)
   - [Multiply and Divide](#multiply-and-divide)
   - [Type Conversions](#type-conversions)
   - [Arithmetic](#arithmetic)
-  - [Floor / Ceil / Round](#floor-ceil-round)
+  - [Floor / Ceil / Round](#floor--ceil--round)
   - [Linear Interpolation](#linear-interpolation)
   - [Angle Helpers](#angle-helpers)
   - [Square Root](#square-root)
   - [Trigonometry](#trigonometry)
-  - [Printing — pm_print](#printing--pm_print)
-- [Using Both Libraries Together](#using-both-libraries-together)
-  - [Valid Flag Combinations](#valid-combinations)
+  - [Printing — pm\_print](#printing--pm_print)
+- [cbuf — Character Display Buffer](#cbuf--character-display-buffer)
+  - [Compile-time Flags](#compile-time-flags-2)
+  - [Translation Table](#translation-table)
+  - [Return Codes](#return-codes)
+  - [Init](#init)
+  - [Cursor](#cursor)
+  - [Read](#read)
+  - [Write](#write)
+  - [Scroll](#scroll)
+- [Using All Three Together](#using-all-three-together)
+  - [Include Order](#include-order)
+  - [Valid Flag Combinations](#valid-flag-combinations)
+  - [Routing ascii\_io Through cbuf](#routing-ascii_io-through-cbuf)
+  - [A Typical Z80/AVR Main](#a-typical-z80avr-main)
+  - [A Typical RP2040 Main](#a-typical-rp2040-main)
   - [The Illegal Combination](#the-illegal-combination)
+
+---
+
+## portable_types.h — Integer Types
+
+**File:** `portable_types.h`
+**Standard:** C89/C90
+
+Single source of truth for integer types across the whole library family.
+Provides `uint8_t`, `int8_t`, `uint16_t`, `int16_t`, `uint32_t`, `int32_t`,
+and `NULL`. Every other library includes it automatically via its own header.
+
+### Flag
+
+| Flag | Effect |
+|------|--------|
+| `PORTABLE_NO_STDINT` | Suppress `<stdint.h>`. Manual fallback typedefs are used instead. Only needed on toolchains that genuinely lack stdint.h. |
+
+### Manual fallback typedefs
+
+When `PORTABLE_NO_STDINT` is defined, the following assumptions are made.
+Adjust the file if your platform differs:
+
+```
+uint8_t   unsigned char    -- always correct
+uint16_t  unsigned short   -- correct on most 8/16-bit targets
+uint32_t  unsigned long    -- correct on most 8/16-bit targets
+                              (NOT correct on LP64 Linux -- but those have stdint.h)
+```
+
+### Usage
+
+```c
+/* Normal use -- stdint.h is available */
+#include "portable_types.h"
+uint16_t count = 0;
+
+/* Ancient toolchain without stdint.h */
+#define PORTABLE_NO_STDINT
+#include "portable_types.h"
+uint16_t count = 0;
+```
 
 ---
 
 ## ascii_io — ASCII Console I/O
 
-**File:** `ascii_io.h`, `ascii_io.c`  
-**Standard:** ANSI C89/C90  
-**Targets:** GCC, ia16-gcc, MinGW, SDCC, Z88DK, Arduino  
-**Dependency:** `<stdint.h>` (or manual typedefs via `ASCII_NO_STDINT`)
+**File:** `ascii_io.h`, `ascii_io.c`
+**Standard:** ANSI C89/C90
+**Targets:** GCC, ia16-gcc, MinGW, SDCC, Z88DK, Arduino
+**Dependency:** `portable_types.h` (included automatically)
 
 Provides string, integer, float, and hex output plus line input and
 parsing. All output goes through a single `ASCII_PUTC` hook; all input
@@ -58,20 +119,20 @@ goes through `ASCII_GETC`. No heap, no stdio, no stdlib.
 You must provide an output character function. Input is only needed
 when `ASCII_NO_INPUT` is not defined.
 
-**Option A — function pointers (default):**
+**Option A — function definition (default):**
 
 ```c
 /* platform.c */
 #include "ascii_io.h"
 
-void ascii_putc(char c) { UART_TX = c; }   /* write one byte */
-char ascii_getc(void)   { return UART_RX;  /* blocking read */ }
+void ascii_putc(char c) { UART_TX = c; }
+char ascii_getc(void)   { return UART_RX; }
 ```
 
 **Option B — inline macros (zero call overhead):**
 
-Define the macros *before* including the header and the function
-declarations are suppressed entirely.
+Define the macros *before* including the header. The function declarations
+are suppressed entirely.
 
 ```c
 #define ASCII_PUTC(c)  uart_tx(c)
@@ -79,29 +140,40 @@ declarations are suppressed entirely.
 #include "ascii_io.h"
 ```
 
+**Routing through cbuf:**
+
+```c
+#define ASCII_PUTC(c)  cbuf_putc((uint8_t)(c))
+#include "ascii_io.h"
+#include "cbuf.h"
+```
+
+The cast to `uint8_t` is required. On targets where `char` is signed,
+characters with the high bit set (inverse video, graphics, upper national
+characters) sign-extend before the table lookup and produce wrong results
+without it.
+
 ---
 
 ### Compile-time Flags
 
-Define any of these before including `ascii_io.h` to shrink the binary.
-
 | Flag | Effect |
 |------|--------|
-| `ASCII_NO_FLOAT` | Omit `ascii_put_f32`. Safe in fixed-point pmath builds. **Do not set** when `PMATH_USE_FLOAT` is active. |
+| `ASCII_NO_FLOAT` | Omit `ascii_put_f32`. Safe in fixed-point pmath builds. Must NOT be set when `PMATH_USE_FLOAT` is active — pmath.h emits a `#error` if both are set. |
 | `ASCII_NO_BCD` | Omit packed-BCD output functions. |
 | `ASCII_NO_INPUT` | Omit all input, `ascii_gets`, and all parse/read functions. |
-| `ASCII_NO_STDINT` | Skip `<stdint.h>`. Provide typedefs manually or rely on `PORTABLE_TYPES_DEFINED`. |
 | `ASCII_CRLF` | `ascii_nl()` emits `\r\n` instead of `\n`. |
 | `ASCII_GETS_ECHO` | `ascii_gets()` echoes each typed character back to the terminal. |
+| `PORTABLE_NO_STDINT` | Suppress `<stdint.h>` in `portable_types.h`. Provide manual typedefs via that file. |
 
 ---
 
 ### String Output
 
 ```c
-void ascii_puts(const char *s);           /* NUL-terminated, NULL-safe */
+void ascii_puts(const char *s);            /* NUL-terminated, NULL-safe */
 void ascii_putn(const char *s, uint8_t n); /* exactly n bytes */
-void ascii_nl(void);                       /* newline (LF or CR+LF) */
+void ascii_nl(void);                       /* newline (LF or CR+LF)     */
 ```
 
 ```c
@@ -112,26 +184,16 @@ ascii_putn("ABCDEF", 3);   /* prints "ABC" */
 ascii_nl();
 ```
 
-Output:
-```
-Hello, world
-ABC
-```
-
 ---
 
 ### Integer Output
 
 ```c
-/* Unsigned decimal */
-void ascii_put_u8 (uint8_t  v);    /*   0..255   */
-void ascii_put_u16(uint16_t v);    /*   0..65535 */
+void ascii_put_u8 (uint8_t  v);    /*   0..255       */
+void ascii_put_u16(uint16_t v);    /*   0..65535     */
+void ascii_put_i8 (int8_t  v);     /* -128..127      */
+void ascii_put_i16(int16_t v);     /* -32768..32767  */
 
-/* Signed decimal */
-void ascii_put_i8 (int8_t  v);     /* -128..127     */
-void ascii_put_i16(int16_t v);     /* -32768..32767 */
-
-/* Hex, zero-padded, uppercase */
 void ascii_put_x8 (uint8_t  v);    /* "AB"     */
 void ascii_put_x16(uint16_t v);    /* "ABCD"   */
 void ascii_put_x8p (uint8_t  v);   /* "0xAB"   */
@@ -145,9 +207,8 @@ ascii_put_x8(0xBE);     ascii_nl();   /* BE     */
 ascii_put_x16p(0xDEAD); ascii_nl();   /* 0xDEAD */
 ```
 
-INT_MIN is handled correctly — negating `INT16_MIN` (-32768) as a
-signed type is undefined behaviour in C; the implementation promotes
-through unsigned arithmetic before negating.
+INT_MIN is handled correctly — the implementation promotes through unsigned
+arithmetic before negating to avoid undefined behaviour.
 
 ---
 
@@ -158,21 +219,18 @@ through unsigned arithmetic before negating.
 void ascii_put_f32(float v, uint8_t decimals);
 ```
 
-`decimals` is silently capped at 7 (the precision limit of 32-bit float).
-Rounding is half-up, applied before splitting whole and fractional parts
-so a carry correctly rolls over (e.g. 1.9995 at 3dp prints `2.000`).
+`decimals` is silently capped at 7. Rounding is half-up, applied before
+splitting whole and fractional parts so carries roll over correctly.
 NaN and Inf are not handled.
 
 ```c
-ascii_put_f32(3.14159f, 4);   ascii_nl();   /* 3.1416  */
-ascii_put_f32(-0.5f,    2);   ascii_nl();   /* -0.50   */
-ascii_put_f32(1.9995f,  3);   ascii_nl();   /* 2.000   */
-ascii_put_f32(1234.0f,  0);   ascii_nl();   /* 1234    */
+ascii_put_f32(3.14159f, 4);   ascii_nl();   /* 3.1416 */
+ascii_put_f32(-0.5f,    2);   ascii_nl();   /* -0.50  */
+ascii_put_f32(1.9995f,  3);   ascii_nl();   /* 2.000  */
 ```
 
-On SDCC and Z88DK, software float is large (~1–2 KB). Define
-`ASCII_NO_FLOAT` and use `pm_print()` from pmath (which uses integer
-arithmetic in fixed-point mode) to avoid it entirely.
+On SDCC and Z88DK, software float is large. Define `ASCII_NO_FLOAT` and use
+`pm_print()` from pmath in fixed-point mode — it uses only integer arithmetic.
 
 ---
 
@@ -180,12 +238,11 @@ arithmetic in fixed-point mode) to avoid it entirely.
 
 ```c
 /* Omitted when ASCII_NO_BCD is defined */
-void ascii_put_bcd8 (uint8_t  v);   /* two nibbles -> two digits */
-void ascii_put_bcd16(uint16_t v);   /* four nibbles -> four digits */
+void ascii_put_bcd8 (uint8_t  v);
+void ascii_put_bcd16(uint16_t v);
 ```
 
-Each nibble is treated as one decimal digit 0–9. No validity check.
-Useful for RTC or hardware BCD registers.
+Each nibble is one decimal digit 0-9. Useful for RTC and hardware BCD registers.
 
 ```c
 ascii_put_bcd8(0x42);     ascii_nl();   /* 42   */
@@ -198,34 +255,31 @@ ascii_put_bcd16(0x1999);  ascii_nl();   /* 1999 */
 
 All input functions are omitted when `ASCII_NO_INPUT` is defined.
 
-#### Line input
-
 ```c
 uint8_t ascii_gets(char *buf, uint8_t maxlen);
-/* Returns number of characters read (not counting NUL).
-   Stops on CR or LF. Handles backspace and DEL.
-   Define ASCII_GETS_ECHO to echo characters as typed. */
 ```
+
+Reads up to `maxlen-1` chars, NUL-terminates, returns character count.
+Stops on CR or LF. Handles backspace and DEL. Define `ASCII_GETS_ECHO`
+to echo characters as typed.
 
 ```c
 char buf[16];
-uint8_t n = ascii_gets(buf, sizeof(buf));
+ascii_gets(buf, sizeof(buf));
 ascii_puts("You typed: ");
 ascii_puts(buf);
 ascii_nl();
 ```
 
-#### Parse (string → number)
-
-Returns `1` on success, `0` on bad format or overflow.
-`*out` is unchanged on failure. Leading whitespace is **not** skipped.
+**Parse (string to number)** — returns 1 on success, 0 on bad format or
+overflow. `*out` is unchanged on failure. Leading whitespace is not skipped.
 
 ```c
 uint8_t ascii_parse_u8 (const char *s, uint8_t  *out);
 uint8_t ascii_parse_u16(const char *s, uint16_t *out);
 uint8_t ascii_parse_i8 (const char *s, int8_t   *out);
 uint8_t ascii_parse_i16(const char *s, int16_t  *out);
-uint8_t ascii_parse_x8 (const char *s, uint8_t  *out);   /* accepts "0x" prefix */
+uint8_t ascii_parse_x8 (const char *s, uint8_t  *out);   /* accepts 0x prefix */
 uint8_t ascii_parse_x16(const char *s, uint16_t *out);
 ```
 
@@ -235,21 +289,14 @@ if (ascii_parse_u16("1234", &v)) {
     ascii_put_u16(v);   /* 1234 */
 }
 
-uint8_t b;
-if (ascii_parse_x8("0xFF", &b)) {
-    ascii_put_x8(b);    /* FF */
-}
-
 int16_t i;
 if (!ascii_parse_i16("99999", &i)) {
-    ascii_puts("overflow");   /* overflow -- 99999 > INT16_MAX */
+    ascii_puts("overflow");   /* 99999 > INT16_MAX */
 }
 ```
 
-#### Stream read (directly from ASCII_GETC)
-
-Skips leading spaces and tabs. Reads until a non-number character,
-which is consumed (usually CR/LF — harmless on a line terminal).
+**Stream read** — skips leading spaces and tabs, reads until a non-number
+character (usually CR/LF), which is consumed.
 
 ```c
 uint8_t ascii_read_u16(uint16_t *out);
@@ -257,29 +304,14 @@ uint8_t ascii_read_i16(int16_t  *out);
 uint8_t ascii_read_x16(uint16_t *out);
 ```
 
-```c
-uint16_t x;
-ascii_puts("Enter a number: ");
-if (ascii_read_u16(&x)) {
-    ascii_puts("Got: ");
-    ascii_put_u16(x);
-    ascii_nl();
-}
-```
-
 ---
 
 ## pmath — Portable Math
 
-**File:** `pmath.h`, `pmath.c`  
-**Standard:** C99  
-**Targets:** Z80, AVR, 6809, RP2040, and other 8/16-bit systems  
-**Dependency:** `ascii_io.h` (for `pm_print`), `<stdint.h>`
-
-Provides fixed-point or float arithmetic, trig, sqrt, and output via
-`pm_print`. All operations are expressed in terms of `num_t`, which
-resolves to either `fixed_t` (int16_t) or `float` depending on the
-build flags. The same application source compiles unchanged in both modes.
+**File:** `pmath.h`, `pmath.c`
+**Standard:** C99
+**Targets:** Z80, AVR, 6809, RP2040, and other 8/16-bit systems
+**Dependency:** `ascii_io.h` (for `pm_print`), `portable_types.h`
 
 ---
 
@@ -288,35 +320,34 @@ build flags. The same application source compiles unchanged in both modes.
 | Flag | Effect |
 |------|--------|
 | `PMATH_USE_FLOAT` | Use 32-bit IEEE 754 `float` as `num_t`. Default is Q8.8 fixed-point. |
-| `PMATH_FRAC_BITS n` | Set fractional bit count (default 8). See table below. |
-| `PMATH_NO_TRIG` | Omit `pm_sin` and `pm_cos`. Saves ~200 bytes ROM in fixed mode (65-byte table + reduction code). |
+| `PMATH_FRAC_BITS n` | Set fractional bit count (default 8). |
+| `PMATH_NO_TRIG` | Omit `pm_sin` and `pm_cos`. Saves ~200 bytes ROM in fixed mode. |
 | `PMATH_NO_SQRT` | Omit `pm_sqrt`. |
-| `PMATH_NO_STDINT` | Skip `<stdint.h>`. Provide typedefs manually or rely on `PORTABLE_TYPES_DEFINED`. |
-| `PMATH_NO_FP_CONST` | Replace all float literals in constant definitions with pre-computed Q8.8 integers. Use when the toolchain has no float type at all (e.g. a bare 6809 compiler). Only valid in fixed-point mode. Only correct for `PMATH_FRAC_BITS=8`. `PM_F()` is undefined under this flag — use `PM_RAW()` instead. |
+| `PMATH_NO_FP_CONST` | Replace all float literals in constant definitions with pre-computed Q8.8 integers. Use when the toolchain has no float type at all. Only valid in fixed-point mode. Only correct for `PMATH_FRAC_BITS=8`. `PM_F()` is undefined under this flag — use `PM_RAW()`. |
+| `PORTABLE_NO_STDINT` | Suppress `<stdint.h>`. See `portable_types.h`. |
 
 #### Fixed-point format options
 
-| `PMATH_FRAC_BITS` | Format | Integer range | Resolution | Best for |
-|-------------------|--------|--------------|------------|----------|
-| 4 | Q12.4 | ±2047 | ~0.0625 | Large integer ranges, coarse fractions |
+| `PMATH_FRAC_BITS` | Format | Range | Resolution | Best for |
+|---|---|---|---|---|
+| 4 | Q12.4 | ±2047 | ~0.0625 | Large integer ranges |
 | **8** (default) | **Q8.8** | **±127** | **~0.0039** | **General 8-bit use** |
-| 12 | Q4.12 | ±7 | ~0.00024 | High-precision fractions, small range |
+| 12 | Q4.12 | ±7 | ~0.00024 | High-precision fractions |
 
 ---
 
 ### Number Format
 
-`num_t` is the universal numeric type. All pmath functions accept and
-return `num_t`. You never need to know whether it is fixed or float
-internally — the macros and functions handle the format transparently.
+`num_t` is the universal numeric type across pmath. All functions accept and
+return `num_t`. The same source code compiles in both fixed and float modes.
 
 ```c
 typedef int16_t fixed_t;   /* always available */
 
 #ifdef PMATH_USE_FLOAT
-  typedef float   num_t;   /* float mode */
+  typedef float   num_t;
 #else
-  typedef fixed_t num_t;   /* fixed-point mode */
+  typedef fixed_t num_t;
 #endif
 ```
 
@@ -327,7 +358,7 @@ typedef int16_t fixed_t;   /* always available */
 All constants are in `num_t` format and resolve at compile time.
 
 | Constant | Value |
-|----------|-------|
+|---|---|
 | `PM_ZERO` | 0 |
 | `PM_HALF` | 0.5 |
 | `PM_ONE` | 1.0 |
@@ -338,85 +369,44 @@ All constants are in `num_t` format and resolve at compile time.
 | `PM_SQRT2` | √2 ≈ 1.41421 |
 | `PM_INV_SQRT2` | 1/√2 ≈ 0.70710 |
 
-```c
-num_t half_turn = PM_PI;
-num_t unit      = PM_ONE;
-```
-
 ---
 
 ### Literal Conversion
 
-`PM_F(x)` converts a compile-time float constant to `num_t`. Use it
-for initialisers and configuration — not inside inner loops on 8-bit
-targets, because it involves a float multiply at compile time which
-some toolchains emit as a runtime call.
+**`PM_F(x)`** converts a compile-time float constant to `num_t`. Use for
+initialisers, not inner loops on 8-bit targets.
 
 ```c
 num_t speed     = PM_F(2.5f);
 num_t threshold = PM_F(-0.75f);
 ```
 
-In fixed mode `PM_F(x)` rounds half-away-from-zero for both positive
-and negative values. In float mode it is a plain cast with no overhead.
-
-For integer values, prefer `pm_itof` which is a shift with no float
-literals at all:
+**`PM_RAW(x)`** takes a pre-scaled integer and converts it to `num_t`.
+Available in all modes, and is the only option when `PMATH_NO_FP_CONST`
+is defined because `PM_F()` is intentionally undefined in that mode.
 
 ```c
-num_t seven = pm_itof(7);   /* no float literal involved */
+/* PMATH_NO_FP_CONST build -- no float type on this toolchain */
+num_t x = PM_RAW(896);    /* 3.5 * 256 = 896 -- Q8.8 for 3.5 */
+num_t y = PM_RAW(64);     /* 0.25 * 256 = 64 -- Q8.8 for 0.25 */
 ```
 
-**When the toolchain has no float type — `PM_RAW(x)`**
+Any remaining `PM_F()` calls give a compile error under `PMATH_NO_FP_CONST`,
+which is the correct behaviour -- replace them with `PM_RAW()`.
 
-`PM_F()` requires float literals, which some toolchains (bare 6809,
-certain CMOC configurations) simply do not support. Define
-`PMATH_NO_FP_CONST` and use `PM_RAW()` instead. You supply the
-pre-scaled Q8.8 integer directly:
+For integer values, `pm_itof` is a shift with no float literals at all:
 
 ```c
-#define PMATH_NO_FP_CONST
-#define ASCII_NO_FLOAT
-
-/* PM_F(3.5f) becomes PM_RAW(896)  -- 3.5 * 256 = 896  */
-/* PM_F(1.25f) becomes PM_RAW(320) -- 1.25 * 256 = 320  */
-
-num_t x = PM_RAW(896);   /* 3.5  */
-num_t y = PM_RAW(320);   /* 1.25 */
-
-/* + and - are plain integer ops -- no macro needed */
-num_t sum  = x + y;          /* 4.75  */
-num_t diff = x - y;          /* 2.25  */
-
-/* * and / must go through pm_mul / pm_div */
-num_t prod = pm_mul(x, y);   /* 4.375 */
-num_t quot = pm_div(x, y);   /* 2.796 */
-
-pm_print(sum,  3);  ascii_nl();   /* 4.750 */
-pm_print(prod, 3);  ascii_nl();   /* 4.375 */
+num_t seven = pm_itof(7);
 ```
-
-Under `PMATH_NO_FP_CONST`, `PM_F()` is intentionally left undefined.
-Any remaining `PM_F()` calls in your code will produce a compile error,
-which is the correct behaviour — replace them with `PM_RAW()` and the
-pre-scaled value.
-
-All the named constants (`PM_PI`, `PM_HALF_PI`, `PM_SQRT2` etc.) are
-also pre-computed as integer literals under this flag, so `pm_sin`,
-`pm_cos`, and `pm_sqrt` work without any float tokens in the build.
 
 ---
 
 ### Multiply and Divide
 
-Use `pm_mul` and `pm_div` for mixed-mode portable code. In fixed mode
-they use a 32-bit intermediate to keep the binary point correct. In
-float mode they expand to plain `*` and `/`.
-
-```c
-num_t pm_mul(num_t a, num_t b);   /* macro */
-num_t pm_div(num_t a, num_t b);   /* macro */
-```
+Use `pm_mul` and `pm_div` for portable code. In fixed mode they use a 32-bit
+intermediate to keep the binary point correct. In float mode they expand to
+plain `*` and `/`. Never use `*` directly on two `fixed_t` values.
 
 ```c
 num_t a = PM_F(3.5f);
@@ -429,39 +419,30 @@ pm_print(product,  4);  ascii_nl();
 pm_print(quotient, 4);  ascii_nl();
 ```
 
-Do **not** use plain `*` on two `fixed_t` values — the result will be
-in the wrong Q format. Always go through `pm_mul`.
+Addition and subtraction work with plain `+` and `-` in both modes — the
+binary point does not move for add/subtract in fixed-point.
 
 ---
 
 ### Type Conversions
 
 ```c
-int16_t pm_ftoi(num_t x);    /* num_t -> int16_t  (macro) */
-num_t   pm_itof(int16_t x);  /* int16_t -> num_t  (macro) */
+int16_t pm_ftoi(num_t x);      /* num_t -> int16_t (truncates in float, floors in fixed) */
+num_t   pm_itof(int16_t x);    /* int16_t -> num_t                                        */
 
-float   pm_to_float(num_t x);    /* num_t -> float  (debug bridge) */
-num_t   pm_from_float(float x);  /* float -> num_t  (debug bridge) */
+float   pm_to_float(num_t x);  /* num_t -> float  (debug bridge, avoid in production)    */
+num_t   pm_from_float(float x);/* float -> num_t  (debug bridge)                          */
 ```
-
-`pm_ftoi` truncates toward zero in float mode and floors (arithmetic
-right-shift) in fixed mode. For symmetric truncation in fixed mode,
-call `pm_floor(pm_abs(x))` and restore the sign.
-
-`pm_to_float` and `pm_from_float` are intended for debug output and
-initialisation. In fixed mode they involve a float divide/multiply —
-avoid them in inner loops and in production code when `ASCII_NO_FLOAT`
-is defined, as they may pull in a soft-float library on SDCC.
 
 ```c
 num_t  x = PM_F(3.9f);
-int16_t i = pm_ftoi(x);           /* 3  (truncates) */
-num_t  back = pm_itof(i);         /* 3.0 */
-
-/* Debug use only: */
-float f = pm_to_float(PM_PI);     /* ~3.1406 */
-num_t p = pm_from_float(3.14f);   /* PM_PI equivalent */
+int16_t i = pm_ftoi(x);        /* 3 */
+num_t  back = pm_itof(i);      /* 3.0 */
 ```
+
+`pm_to_float` and `pm_from_float` involve a float operation in fixed mode.
+Avoid them in production code when `ASCII_NO_FLOAT` is defined as they
+may pull in a soft-float library on SDCC.
 
 ---
 
@@ -473,19 +454,14 @@ All inline, no function call overhead.
 num_t pm_abs  (num_t x);
 num_t pm_min  (num_t a, num_t b);
 num_t pm_max  (num_t a, num_t b);
-int   pm_sign (num_t x);           /* returns -1, 0, or 1 */
+int   pm_sign (num_t x);            /* returns -1, 0, or 1 */
 num_t pm_clamp(num_t x, num_t lo, num_t hi);
 ```
 
 ```c
-pm_print(pm_abs(PM_F(-2.5f)),                   4); /* 2.5000 */
-pm_print(pm_min(PM_F(3.0f), PM_F(5.0f)),        4); /* 3.0000 */
-pm_print(pm_max(PM_F(3.0f), PM_F(5.0f)),        4); /* 5.0000 */
-pm_print(pm_clamp(PM_F(7.0f), PM_ONE, PM_F(4.0f)), 4); /* 4.0000 */
-
-ascii_put_i16(pm_sign(PM_PI));    ascii_nl();  /*  1 */
-ascii_put_i16(pm_sign(PM_ZERO));  ascii_nl();  /*  0 */
-ascii_put_i16(pm_sign(-PM_ONE));  ascii_nl();  /* -1 */
+pm_print(pm_abs(PM_F(-2.5f)),                    4);  /* 2.5000 */
+pm_print(pm_clamp(PM_F(7.0f), PM_ONE, PM_F(4.0f)), 4);  /* 4.0000 */
+ascii_put_i16(pm_sign(-PM_ONE));  ascii_nl();             /* -1     */
 ```
 
 ---
@@ -498,16 +474,14 @@ num_t pm_ceil (num_t x);
 num_t pm_round(num_t x);   /* half-up: pm_floor(x + 0.5) */
 ```
 
-Fixed mode uses bit-masking for floor and ceil — correct for negative
-two's-complement values without any branches.
+Fixed mode uses bit-masking — correct for negative two's-complement values,
+no branches.
 
 ```c
 pm_print(pm_floor(PM_F( 3.7f)), 4);  /*  3.0000 */
 pm_print(pm_floor(PM_F(-1.5f)), 4);  /* -2.0000 */
-pm_print(pm_ceil (PM_F( 3.2f)), 4);  /*  4.0000 */
 pm_print(pm_ceil (PM_F(-1.5f)), 4);  /* -1.0000 */
 pm_print(pm_round(PM_F( 2.6f)), 4);  /*  3.0000 */
-pm_print(pm_round(PM_F( 2.4f)), 4);  /*  2.0000 */
 ```
 
 ---
@@ -516,21 +490,12 @@ pm_print(pm_round(PM_F( 2.4f)), 4);  /*  2.0000 */
 
 ```c
 num_t pm_lerp(num_t a, num_t b, num_t t);
-/* a + t*(b-a),  t should be in [0, 1] */
+/* a + t*(b-a),  t in [0, 1] */
 ```
 
-In fixed mode: one 32-bit multiply. No branches.
-
 ```c
-/* Fade from 0 to 255 at t=0.75 */
 num_t result = pm_lerp(PM_ZERO, PM_F(255.0f), PM_F(0.75f));
-pm_print(result, 0);  /* 191 */
-ascii_nl();
-
-/* Midpoint between two angles */
-num_t mid = pm_lerp(PM_F(1.0f), PM_F(3.0f), PM_HALF);
-pm_print(mid, 4);  /* 2.0000 */
-ascii_nl();
+pm_print(result, 0);  ascii_nl();   /* 191 */
 ```
 
 ---
@@ -539,29 +504,20 @@ ascii_nl();
 
 ```c
 num_t pm_wrap_angle(num_t x);      /* wrap radians to [0, 2*pi) */
-num_t pm_deg2rad(num_t degrees);   /* degrees -> radians */
-num_t pm_rad2deg(num_t radians);   /* radians -> degrees */
+num_t pm_deg2rad(num_t degrees);
+num_t pm_rad2deg(num_t radians);
 ```
 
-`pm_wrap_angle` uses a subtraction loop — efficient when angles are
-already near-range, as is typical in rotation and animation code.
-
-**Fixed-point range note for `pm_rad2deg`:** Q8.8 holds integers up to
-127, so angles above ~127° will overflow on output. `pm_deg2rad` has the
-same limit on input. Use `PMATH_USE_FLOAT` for full 0–360° arithmetic.
+Fixed-point range note: Q8.8 holds integers up to 127, so `pm_rad2deg`
+output above ~127 degrees overflows. Use `PMATH_USE_FLOAT` for full
+0-360 degree arithmetic.
 
 ```c
 num_t a = pm_deg2rad(PM_F(45.0f));
-pm_print(a, 4);   /* 0.7851 (Q8.8) / 0.7854 (float) */
-ascii_nl();
+pm_print(a, 4);  ascii_nl();   /* 0.7851 (Q8.8) / 0.7854 (float) */
 
 num_t d = pm_rad2deg(PM_HALF_PI);
-pm_print(d, 4);   /* 90.0000 */
-ascii_nl();
-
-num_t wrapped = pm_wrap_angle(PM_F(-0.5f));
-pm_print(wrapped, 4);  /* ~5.7831 (= 2*pi - 0.5) */
-ascii_nl();
+pm_print(d, 4);  ascii_nl();   /* 90.0000 */
 ```
 
 ---
@@ -573,20 +529,16 @@ ascii_nl();
 num_t pm_sqrt(num_t x);
 ```
 
-**Fixed mode:** digit-by-digit binary method, no division. Upshifts
-the raw input by `PMATH_FRAC_BITS` before the integer sqrt so the
-result lands in the correct Q format. Works for any `PMATH_FRAC_BITS`.
+**Fixed mode:** digit-by-digit binary method, no division. Works for any
+`PMATH_FRAC_BITS` value.
 
-**Float mode:** fast inverse sqrt via IEEE 754 bit trick
-(`0x5F375A86` constant) with two Newton-Raphson iterations,
-error < 1 ULP for 32-bit float. Requires C99 union type-punning.
+**Float mode:** fast inverse sqrt via IEEE 754 bit trick with two
+Newton-Raphson iterations, error < 1 ULP. Requires C99 union type-punning.
 
 ```c
-pm_print(pm_sqrt(PM_ONE),     4);  /* 1.0000 */  ascii_nl();
-pm_print(pm_sqrt(PM_TWO),     4);  /* 1.4140 */  ascii_nl();
-pm_print(pm_sqrt(PM_F(4.0f)), 4);  /* 2.0000 */  ascii_nl();
-pm_print(pm_sqrt(PM_F(9.0f)), 4);  /* 3.0000 */  ascii_nl();
-pm_print(pm_sqrt(PM_HALF),    4);  /* 0.7070 */  ascii_nl();
+pm_print(pm_sqrt(PM_ONE),    4);  /* 1.0000 */  ascii_nl();
+pm_print(pm_sqrt(PM_TWO),    4);  /* 1.4142 */  ascii_nl();
+pm_print(pm_sqrt(PM_F(9.0f)),4);  /* 3.0000 */  ascii_nl();
 ```
 
 ---
@@ -599,36 +551,30 @@ num_t pm_sin(num_t radians);
 num_t pm_cos(num_t radians);
 ```
 
-All angles are in radians in the current `num_t` format.
-
-**Fixed mode:** 65-entry `uint8_t` quarter-wave lookup table (65 bytes
-ROM). Quadrant reduction folds the full circle down to `[0, π/2]` using
-only subtraction and comparison — no division. Table index computed as
-`(x * 41) >> 8`, which approximates `x * 64 / 402` without a divide.
+**Fixed mode:** 65-entry `uint8_t` quarter-wave table (65 bytes ROM).
+Quadrant reduction uses only subtraction and comparison. Table index
+computed as `(x * 41) >> 8`, approximating `x * 64 / 402` without division.
 Accuracy < 0.5 LSB across full range at Q8.8.
 
-**Float mode:** Bhaskara I rational approximation for sin on `[0, π]`:
+**Float mode:** Bhaskara I rational approximation on [0, π]:
 
 ```
 sin(x) ≈ 16x(π−x) / (5π² − 4x(π−x))
 ```
 
-Two multiplies and one divide. Exact at 0, π/6, π/4, π/3, π/2 and
-their mirrors. Maximum error ~0.17%.
+Two multiplies, one divide. Exact at 0, π/6, π/4, π/3, π/2 and mirrors.
+Maximum error ~0.17%.
 
 ```c
 pm_print(pm_sin(PM_ZERO),    4);  /* 0.0000 */  ascii_nl();
 pm_print(pm_sin(PM_HALF_PI), 4);  /* 1.0000 */  ascii_nl();
-pm_print(pm_sin(PM_PI),      4);  /* 0.0000 */  ascii_nl();
-pm_print(pm_cos(PM_ZERO),    4);  /* 1.0000 */  ascii_nl();
-pm_print(pm_cos(PM_HALF_PI), 4);  /* 0.0000 */  ascii_nl();
+pm_print(pm_cos(PM_PI),      4);  /* -1.0000 */ ascii_nl();
 
-/* Pythagorean identity: sin^2 + cos^2 = 1 */
+/* Pythagorean identity */
 num_t s = pm_sin(PM_F(1.2f));
 num_t c = pm_cos(PM_F(1.2f));
-num_t identity = (num_t)(pm_mul(s,s) + pm_mul(c,c));
-pm_print(identity, 4);   /* ~0.9921 (Q8.8) / ~0.9994 (float) */
-ascii_nl();
+num_t id = (num_t)(pm_mul(s,s) + pm_mul(c,c));
+pm_print(id, 4);  ascii_nl();   /* ~0.9921 (Q8.8) / ~0.9994 (float) */
 ```
 
 ---
@@ -639,72 +585,303 @@ ascii_nl();
 void pm_print(num_t v, uint8_t decimals);
 ```
 
-The primary output function. Bridges `num_t` to `ascii_io` in a way
-that is correct and minimal in both modes.
+**Float mode:** delegates to `ascii_put_f32(v, decimals)`. `ASCII_NO_FLOAT`
+must not be set — enforced by `#error` at compile time.
 
-**Float mode:** delegates directly to `ascii_put_f32(v, decimals)`.
-`ASCII_NO_FLOAT` must not be set (enforced by `#error` at compile time).
-
-**Fixed mode:** digit-by-digit integer arithmetic only — no float
-involved at any point. The fractional digits are extracted by
-multiplying the raw fractional bits by 10 in a 32-bit intermediate
-and reading the integer part of the result, one digit at a time.
-`ASCII_NO_FLOAT` is completely safe to define.
+**Fixed mode:** digit-by-digit integer arithmetic only. No float involved
+at any point. `ASCII_NO_FLOAT` is completely safe.
 
 ```c
-pm_print(PM_PI,         4);  /* 3.1416 (float) / 3.1406 (Q8.8) */
-pm_print(PM_F(1.5f),    3);  /* 1.500  */
-pm_print(PM_F(-1.5f),   3);  /* -1.500 */
-pm_print(PM_ZERO,       2);  /* 0.00   */
-pm_print(pm_itof(42),   0);  /* 42     */
+pm_print(PM_PI,         4);   /* 3.1416 (float) / 3.1406 (Q8.8) */
+pm_print(PM_F(1.5f),    3);   /* 1.500  */
+pm_print(PM_F(-1.5f),   3);   /* -1.500 */
+pm_print(pm_itof(42),   0);   /* 42     */
 ```
-
-Precision is bounded by the format. Q8.8 has ~2.4 significant decimal
-digits; requesting more decimal places than the format supports will
-print correct digits down to the LSB and zeros beyond.
 
 ---
 
-## Using Both Libraries Together
+## cbuf — Character Display Buffer
 
-### Include order
+**File:** `cbuf.h`, `cbuf.c`
+**Standard:** C89/C90
+**Targets:** Z80, AVR, 6809, RP2040, memory-mapped display hardware
+**Dependency:** `portable_types.h` (included automatically)
 
-Always include `ascii_io.h` before `pmath.h`. Both headers share a
-`PORTABLE_TYPES_DEFINED` sentinel so typedefs are only emitted once.
+Manages a flat byte array as a character display. Each byte is one screen
+position. The library tracks a soft cursor and writes translated character
+codes into the buffer. Hardware rendering is entirely the application's
+responsibility — this library only manages what is in the buffer.
+
+It is a palette and canvas. Backspace, line editing, blinking cursors,
+double buffering — those are brushes. Build them from the primitives here.
+
+---
+
+### Compile-time Flags
+
+| Flag | Effect |
+|------|--------|
+| `CBUF_ASCII_NATIVE` | No translation table. Characters written directly. Use when the display ROM is ASCII-compatible. Drops all table code and ROM data. Cannot combine with `CBUF_TABLE_POINTER`. |
+| `CBUF_NO_SCROLL` | Drop `cbuf_scroll_up` and the runtime scroll flag at compile time. `cbuf_putc` returns `CBUF_OVERFLOW` on out-of-bounds, always. |
+| `CBUF_TABLE_POINTER` | Translation table is a runtime pointer. Enables `cbuf_set_table()` and `cbuf_copy_table()`. Cannot combine with `CBUF_ASCII_NATIVE`. |
+| `CBUF_TABLE_SIZE 256` | Extend table to full byte range 0x00..0xFF (default 128). Costs 256 bytes ROM for the default table vs 128. Needed for inverse video, graphics characters, upper national characters (CoCo, VZ200). |
+| `PORTABLE_NO_STDINT` | Suppress `<stdint.h>`. See `portable_types.h`. |
+
+---
+
+### Translation Table
+
+`cbuf_default_table` is defined in `cbuf.c` as an identity map (ASCII
+passthrough). Override it by defining your own array with the same name
+in your application — the linker prefers your definition.
+
+With `CBUF_TABLE_POINTER` you can switch tables at runtime and patch
+the ROM default into RAM:
 
 ```c
-#include "ascii_io.h"
-#include "pmath.h"
+static uint8_t my_table[CBUF_TABLE_SIZE];
+cbuf_copy_table(my_table);          /* clone ROM default into RAM    */
+my_table['A'] = COCO_SCREEN_A;     /* patch individual entries      */
+cbuf_set_table(my_table);           /* repoint library to RAM table  */
+
+/* Repoint back to ROM default later if needed */
+cbuf_set_table(cbuf_default_table);
 ```
+
+`cbuf_copy_table` is a 128 or 256 byte loop — essentially free on any target.
+
+---
+
+### Return Codes
+
+| Code | Value | Meaning |
+|------|-------|---------|
+| `CBUF_OK` | 0 | Operation succeeded |
+| `CBUF_SCROLLED` | 1 | Write succeeded but caused a scroll |
+| `CBUF_OVERFLOW` | -1 | Out of bounds and scroll is off or dropped |
+
+---
+
+### Init
+
+```c
+void cbuf_init(uint8_t *ptr, uint8_t cols, uint8_t rows);
+```
+
+Bind the library to a display buffer. `ptr` must point to at least
+`cols * rows` bytes. On memory-mapped targets pass the screen RAM address
+directly. Cursor is reset to (0,0). Buffer contents are not cleared.
+
+```c
+static uint8_t screen[32 * 16];
+cbuf_init(screen, 32, 16);
+cbuf_clear(' ');
+
+/* CoCo memory-mapped screen: */
+cbuf_init((uint8_t *)0x0400, 32, 16);
+```
+
+---
+
+### Cursor
+
+```c
+int8_t  cbuf_goto(uint8_t x, uint8_t y);
+uint8_t cbuf_get_x(void);
+uint8_t cbuf_get_y(void);
+```
+
+`cbuf_goto` moves the soft cursor. Out-of-bounds coordinates are clamped and
+`CBUF_OVERFLOW` is returned — the cursor always ends up at a valid position.
+
+```c
+cbuf_goto(0, 0);                          /* top-left          */
+cbuf_goto(cbuf_get_x() + 1, cbuf_get_y()); /* one step right  */
+```
+
+---
+
+### Read
+
+```c
+uint8_t cbuf_getc(void);
+uint8_t cbuf_get_raw(uint8_t x, uint8_t y);
+uint8_t cbuf_read_eol(uint8_t fill, char *dst, uint8_t maxlen);
+```
+
+`cbuf_getc` reads the raw screen code at the current cursor position.
+`cbuf_get_raw` reads at an arbitrary position. Both return 0 for out-of-bounds
+positions. Neither moves the cursor.
+
+`cbuf_read_eol` copies raw bytes from the cursor to the end of meaningful
+content on the current row, stripping trailing `fill` characters. Always
+NUL-terminates `dst`. Returns the number of bytes copied.
+
+```c
+/* Soft cursor blink -- save, replace, restore */
+uint8_t saved = cbuf_getc();
+cbuf_put_raw(cbuf_get_x(), cbuf_get_y(), 0xDB);  /* show block cursor */
+/* ... on next timer tick: */
+cbuf_put_raw(cbuf_get_x(), cbuf_get_y(), saved);  /* restore           */
+
+/* Read user input from a row */
+char buf[33];
+cbuf_goto(0, 5);
+cbuf_read_eol(' ', buf, sizeof(buf));
+ascii_puts("Got: ");
+ascii_puts(buf);
+ascii_nl();
+```
+
+---
+
+### Write
+
+```c
+int8_t  cbuf_putc(uint8_t c);
+int8_t  cbuf_puts(const char *s);
+void    cbuf_clear(uint8_t fill);
+void    cbuf_clear_line(uint8_t y, uint8_t fill);
+void    cbuf_clear_eol(uint8_t fill);
+int8_t  cbuf_put_raw(uint8_t x, uint8_t y, uint8_t code);
+```
+
+`cbuf_putc` translates `c` through the active table and writes at the current
+cursor position, then advances. At end of row it wraps to column 0 of the
+next row. At end of the last row it scrolls (if scroll is on) or returns
+`CBUF_OVERFLOW` (if scroll is off). Returns `CBUF_OK`, `CBUF_SCROLLED`,
+or `CBUF_OVERFLOW`.
+
+`cbuf_puts` calls `cbuf_putc` for each character. Stops at first overflow.
+
+`cbuf_put_raw` writes a raw screen code with no translation, no cursor
+movement, and no scroll. Use it for graphics characters, inverse video,
+and cursor blinking.
+
+`cbuf_clear` fills the whole buffer and resets cursor to (0,0).
+`cbuf_clear_line` fills one row. `cbuf_clear_eol` fills from cursor to end
+of current row. None of the clear operations move the cursor (except
+`cbuf_clear` which resets it).
+
+```c
+cbuf_goto(0, 0);
+cbuf_puts("Hello, world");
+
+cbuf_goto(10, 5);
+cbuf_put_raw(10, 5, 0xAE);   /* direct graphics char at (10,5) */
+
+cbuf_clear_line(7, '-');     /* draw a separator line */
+```
+
+---
+
+### Scroll
+
+```c
+/* Both omitted when CBUF_NO_SCROLL is defined */
+void cbuf_set_scroll(uint8_t on);
+void cbuf_scroll_up(uint8_t fill);
+```
+
+`cbuf_set_scroll(1)` enables auto-scroll on overflow (the default after
+`cbuf_init`). `cbuf_set_scroll(0)` switches to hard-stop mode — `cbuf_putc`
+returns `CBUF_OVERFLOW` instead of scrolling.
+
+`cbuf_scroll_up` shifts rows 1..rows-1 up to rows 0..rows-2, fills the new
+bottom row with `fill` (a raw screen code, not translated), and decrements
+the cursor row by one. Uses a plain byte loop — no memmove, no string.h.
+
+```c
+cbuf_set_scroll(1);
+
+/* Fill all rows then overflow -- watch it scroll */
+uint8_t y;
+for (y = 0; y < 16; y++) {
+    cbuf_goto(0, y);
+    cbuf_putc((uint8_t)('0' + (y % 10)));
+    cbuf_puts(": content here");
+}
+/* Writing past the last row triggers scroll automatically */
+cbuf_puts(" overflow!");
+
+/* Or scroll explicitly */
+cbuf_scroll_up(' ');
+```
+
+---
+
+## Using All Three Together
+
+### Include Order
+
+```c
+#include "ascii_io.h"   /* first  */
+#include "pmath.h"      /* second */
+#include "cbuf.h"       /* third  */
+```
+
+Each header includes `portable_types.h` internally. The first include
+defines the types via the header's include guard — subsequent includes are
+no-ops. You never need to worry about type redefinitions.
 
 ### Valid Flag Combinations
 
-All combinations in this table build and run correctly.
-
 | Configuration | Flags | Notes |
-|---------------|-------|-------|
-| Full build | *(none)* | Everything present, float printer available |
-| Ideal 8-bit | `ASCII_NO_FLOAT` | Fixed math, `pm_print` uses integers, float printer gone |
-| No trig | `ASCII_NO_FLOAT` `PMATH_NO_TRIG` | Saves 65-byte table + ~150 bytes reduction code |
+|---|---|---|
+| Full build | *(none)* | Everything present |
+| Ideal 8-bit | `ASCII_NO_FLOAT` | Fixed math, integer print, float printer dropped |
+| No trig | `ASCII_NO_FLOAT` `PMATH_NO_TRIG` | Saves 65-byte table + ~150 bytes |
 | No sqrt | `ASCII_NO_FLOAT` `PMATH_NO_SQRT` | Saves ~50 bytes |
-| No float type at all | `ASCII_NO_FLOAT` `PMATH_NO_FP_CONST` | 6809 / no-float toolchain. Use `PM_RAW()` instead of `PM_F()`. Q8.8 only. |
-| Bare minimum | `ASCII_NO_FLOAT` `ASCII_NO_BCD` `ASCII_NO_INPUT` `PMATH_NO_TRIG` `PMATH_NO_SQRT` | 32 bytes pmath text; arithmetic + print only |
-| Float on capable target | `PMATH_USE_FLOAT` | RP2040, ARM; float printer required |
-| Higher precision | `PMATH_FRAC_BITS=12` | Q4.12 — works with any drop flag above |
-| Wider range | `PMATH_FRAC_BITS=4` | Q12.4 — works with any drop flag above |
+| No float type at all | `ASCII_NO_FLOAT` `PMATH_NO_FP_CONST` | 6809/no-float toolchain. Use `PM_RAW()` not `PM_F()`. Q8.8 only. |
+| Bare minimum | `ASCII_NO_FLOAT` `ASCII_NO_BCD` `ASCII_NO_INPUT` `PMATH_NO_TRIG` `PMATH_NO_SQRT` | 32 bytes pmath text |
+| Float on capable target | `PMATH_USE_FLOAT` | RP2040, ARM |
+| ASCII-native display | `CBUF_ASCII_NATIVE` | Display ROM is ASCII, no table needed |
+| No scroll | `CBUF_NO_SCROLL` | Drop scroll_up entirely |
+| Full CoCo/VZ200 | `CBUF_TABLE_SIZE=256` `CBUF_TABLE_POINTER` | Inverse video, graphics, patchable table |
+| Higher precision | `PMATH_FRAC_BITS=12` | Q4.12, any drop flag combination |
+| No stdint.h | `PORTABLE_NO_STDINT` | Ancient toolchain, one flag covers all three libraries |
 
-### A typical Z80/AVR main
+### Routing ascii_io Through cbuf
 
 ```c
-#define ASCII_NO_FLOAT      /* no soft-float library */
-#define ASCII_NO_INPUT      /* output only device    */
-#define PMATH_NO_TRIG       /* trig not needed here  */
+#define ASCII_PUTC(c)  cbuf_putc((uint8_t)(c))
+#include "ascii_io.h"
+#include "pmath.h"
+#include "cbuf.h"
+
+static uint8_t screen[32 * 16];
+
+void ascii_putc(char c) { (void)c; }  /* stub -- ASCII_PUTC macro overrides */
+
+int main(void)
+{
+    cbuf_init(screen, 32, 16);
+    cbuf_clear(' ');
+
+    cbuf_goto(0, 0);
+    ascii_puts("pi = ");
+    pm_print(PM_PI, 4);        /* "pi = 3.1406" written into screen buffer */
+
+    cbuf_goto(0, 1);
+    ascii_puts("sqrt(2) = ");
+    pm_print(pm_sqrt(PM_TWO), 4);
+
+    /* Push screen[] to hardware here */
+    return 0;
+}
+```
+
+### A Typical Z80/AVR Main
+
+```c
+#define ASCII_NO_FLOAT
+#define ASCII_NO_INPUT
+#define PMATH_NO_TRIG
 
 #include "ascii_io.h"
 #include "pmath.h"
 
-/* Platform hook -- replace with your UART write */
-void ascii_putc(char c) { /* ... */ }
+void ascii_putc(char c) { /* UART write */ }
 
 int main(void)
 {
@@ -720,10 +897,10 @@ int main(void)
 }
 ```
 
-### A typical RP2040 main
+### A Typical RP2040 Main
 
 ```c
-#define PMATH_USE_FLOAT     /* RP2040 ROM float is cheap */
+#define PMATH_USE_FLOAT   /* RP2040 ROM float routines are essentially free */
 
 #include "ascii_io.h"
 #include "pmath.h"
@@ -745,19 +922,19 @@ int main(void)
 
 ### The Illegal Combination
 
-This combination is caught at compile time with a `#error`:
+This is caught at compile time with a `#error`:
 
 ```c
 #define PMATH_USE_FLOAT
-#define ASCII_NO_FLOAT      /* ERROR -- pm_print needs ascii_put_f32 */
+#define ASCII_NO_FLOAT   /* ERROR -- pm_print needs ascii_put_f32 in float mode */
 #include "ascii_io.h"
 #include "pmath.h"
-/* pmath.h:85: error: PMATH_USE_FLOAT requires ascii_put_f32() */
+/* pmath.h: error: PMATH_USE_FLOAT requires ascii_put_f32() */
 ```
 
-In fixed-point mode there is no such restriction — `ASCII_NO_FLOAT` is
-always safe when `PMATH_USE_FLOAT` is not set.
+In fixed-point mode there is no such restriction. `ASCII_NO_FLOAT` is always
+safe when `PMATH_USE_FLOAT` is not set.
 
 ---
 
-*ascii_io standard: C89/C90 — pmath standard: C99*
+*ascii_io, cbuf, portable_types: C89/C90 — pmath: C99*

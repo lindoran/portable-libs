@@ -1,15 +1,20 @@
 # portable-libs
 
-Two small C libraries for embedded and retro targets. No stdlib, no malloc,
+Three small C libraries for embedded and retro targets. No stdlib, no malloc,
 no printf. Just a UART hook and you're in business.
 
-They're designed to work together but either one stands alone. The focus
+They're designed to work together but each one stands alone. The focus
 is 8-bit platforms — Z80, AVR, 6809 — though they build clean on RP2040
 and anything else you throw at them.
 
 ---
 
 ## What's here
+
+**`portable_types.h`** is the foundation. One header, one flag
+(`PORTABLE_NO_STDINT`), covers all six integer types the family needs.
+Every other library includes it automatically so you never have to think
+about it unless your toolchain is genuinely ancient.
 
 **`ascii_io`** handles all your console I/O. Strings, integers, hex, floats,
 packed BCD, line input, parsing. Everything you'd normally lean on printf
@@ -22,6 +27,12 @@ source code, both targets. On an 8-bit machine you get fixed-point sin/cos
 from a 65-byte lookup table, a no-division binary sqrt, and all the usual
 arithmetic helpers. On something with an FPU you flip one flag and get
 proper floats with no code changes.
+
+**`cbuf`** manages a flat byte array as a character display. You hand it a
+pointer, tell it the dimensions, and it gives you a soft cursor, translation
+table, scrolling, and read/write primitives. Hardware rendering is entirely
+your problem — the library just keeps track of what's where. Works directly
+with a memory-mapped screen on a CoCo or VZ200 with no intermediary.
 
 ---
 
@@ -38,8 +49,8 @@ costs a fraction of the size.
 
 The other thing is portability. SDCC, Z88DK, AVR-GCC, ia16-gcc, CMOC — they
 all have their own quirks around math libraries and float support. These
-libraries have none of those dependencies. Drop the two `.c` files in your
-build, define an `ascii_putc` hook, done.
+libraries have none of those dependencies. Drop the `.c` files in your build,
+define an `ascii_putc` hook, done.
 
 ---
 
@@ -69,8 +80,8 @@ int main(void)
 }
 ```
 
-Always include `ascii_io.h` before `pmath.h`. They share a type sentinel
-and the order matters.
+Include order: `ascii_io.h` first, `pmath.h` second, `cbuf.h` third if you're
+using it. Each header pulls in `portable_types.h` automatically.
 
 ---
 
@@ -132,11 +143,11 @@ supply the pre-scaled Q8.8 integer directly:
 
 ```c
 /* Instead of PM_F(3.5f): */
-num_t x = PM_RAW(896);    /* 3.5 * 256 = 896 */
+num_t x = PM_RAW(896);     /* 3.5 * 256 = 896 */
+num_t y = PM_RAW(320);     /* 1.25 * 256 = 320 */
 
 /* Addition and subtraction work with plain + and - */
-num_t y = PM_RAW(320);    /* 1.25 * 256 = 320 */
-num_t sum = x + y;        /* 4.75 -- no macro needed */
+num_t sum = x + y;         /* 4.75 -- no macro needed */
 
 /* Multiply and divide must go through pm_mul / pm_div */
 num_t prod = pm_mul(x, y); /* 4.375 */
@@ -147,18 +158,61 @@ pm_print(prod, 3);  ascii_nl();   /* 4.375 */
 pm_print(quot, 3);  ascii_nl();   /* 2.796 */
 ```
 
-The key point: addition and subtraction on fixed-point are just integer
-`+` and `-` — the binary point doesn't move. Multiply and divide need
-the 32-bit shift that `pm_mul`/`pm_div` provide, otherwise the binary
-point ends up in the wrong place.
+Addition and subtraction on fixed-point are just integer `+` and `-` — the
+binary point doesn't move. Multiply and divide need the 32-bit shift that
+`pm_mul`/`pm_div` provide, otherwise the binary point ends up in the wrong
+place.
+
+---
+
+## Using cbuf with ascii_io
+
+Point `ASCII_PUTC` at `cbuf_putc` and every ascii_io output function renders
+directly into the screen buffer. The cast to `uint8_t` matters — without it,
+characters with the high bit set sign-extend on targets where `char` is signed,
+which corrupts the table lookup for inverse video and graphics characters.
+
+```c
+#define ASCII_PUTC(c)  cbuf_putc((uint8_t)(c))
+#include "ascii_io.h"
+#include "pmath.h"
+#include "cbuf.h"
+
+static uint8_t screen[32 * 16];  /* 32 cols, 16 rows */
+
+void ascii_putc_unused(char c) { (void)c; }  /* stub -- macro overrides it */
+
+int main(void)
+{
+    cbuf_init(screen, 32, 16);
+    cbuf_clear(' ');
+
+    cbuf_goto(0, 0);
+    ascii_puts("pi = ");
+    pm_print(PM_PI, 4);          /* renders: "pi = 3.1406" into buffer */
+
+    cbuf_goto(0, 1);
+    ascii_puts("sqrt(2) = ");
+    pm_print(pm_sqrt(PM_TWO), 4); /* renders: "sqrt(2) = 1.4140" */
+
+    /* Now copy screen[] to hardware, blit it, whatever you need */
+    return 0;
+}
+```
+
+On a CoCo or VZ200 with memory-mapped video, `screen` just IS the display RAM:
+
+```c
+static uint8_t *screen = (uint8_t *)0x0400;  /* CoCo screen RAM */
+cbuf_init(screen, 32, 16);
+```
 
 ---
 
 ## Stripping it down
 
-Both libraries are designed to be trimmed. Every feature has a drop flag.
-On a really constrained target you can get pmath down to 32 bytes of text
-and still have arithmetic and `pm_print`.
+Every feature has a drop flag. On a really constrained target you can get
+pmath down to 32 bytes of text and still have arithmetic and `pm_print`.
 
 ```c
 #define ASCII_NO_FLOAT      /* no soft-float library on this toolchain */
@@ -176,9 +230,23 @@ combination wrong.
 In fixed-point mode `pm_print` uses pure integer arithmetic and
 `ASCII_NO_FLOAT` is completely safe. That's the typical 8-bit setup.
 
+cbuf also has drop flags:
+
+```c
+#define CBUF_ASCII_NATIVE    /* no translation table -- display ROM is ASCII */
+#define CBUF_NO_SCROLL       /* drop scroll_up entirely */
+```
+
 ---
 
 ## What's in the box
+
+### portable_types.h
+
+One flag: `PORTABLE_NO_STDINT` — suppresses `<stdint.h>` and uses manual
+typedefs instead. Only needed on toolchains that genuinely lack stdint.h.
+Provides `uint8_t`, `int8_t`, `uint16_t`, `int16_t`, `uint32_t`, `int32_t`,
+and `NULL`. Every library in the family includes it automatically.
 
 ### ascii_io
 
@@ -195,10 +263,10 @@ In fixed-point mode `pm_print` uses pure integer arithmetic and
 ### pmath
 
 - `num_t` type — `int16_t` in fixed mode, `float` in float mode
-- `PM_F(x)` — float literal to `num_t` (fixed/float modes)
+- `PM_F(x)` — float literal to `num_t` (fixed and float modes)
 - `PM_RAW(x)` — pre-scaled integer to `num_t` (all modes including no-float)
 - `pm_mul`, `pm_div` — correct fixed-point arithmetic with 32-bit intermediates
-- `+` and `-` on `num_t` work directly — no macro needed in fixed mode
+- `+` and `-` on `num_t` work directly in fixed mode — no macro needed
 - `pm_abs`, `pm_min`, `pm_max`, `pm_sign`, `pm_clamp`
 - `pm_floor`, `pm_ceil`, `pm_round`
 - `pm_lerp` — linear interpolation, one 32-bit multiply in fixed mode
@@ -208,48 +276,74 @@ In fixed-point mode `pm_print` uses pure integer arithmetic and
 - `pm_print(v, decimals)` — bridges to ascii_io, integer-only path in fixed mode
 - `pm_ftoi`, `pm_itof`, `pm_to_float`, `pm_from_float`
 
+### cbuf
+
+- `cbuf_init(ptr, cols, rows)` — bind library to a display buffer
+- `cbuf_clear(fill)` — fill entire buffer, reset cursor to 0,0
+- `cbuf_goto(x, y)` — move soft cursor, returns error on out-of-bounds
+- `cbuf_get_x()`, `cbuf_get_y()` — read current cursor position
+- `cbuf_putc(c)` — translate and write at cursor, advance, scroll or error
+- `cbuf_puts(s)` — write string via cbuf_putc
+- `cbuf_getc()` — read raw screen code at cursor (no cursor move)
+- `cbuf_get_raw(x, y)`, `cbuf_put_raw(x, y, code)` — direct buffer access, no translation
+- `cbuf_clear_line(y, fill)` — clear one row
+- `cbuf_clear_eol(fill)` — clear from cursor to end of row
+- `cbuf_read_eol(fill, dst, maxlen)` — copy meaningful content from cursor to end of row
+- `cbuf_scroll_up(fill)` — shift all rows up, clear bottom
+- `cbuf_set_scroll(on)` — enable/disable auto-scroll at runtime
+- `cbuf_set_table(ptr)` — point to a different translation table at runtime
+- `cbuf_copy_table(dst)` — clone ROM default table into RAM for patching
+
 ---
 
 ## Building
 
-No build system required. Just add the two `.c` files to your project.
+No build system required. Add the `.c` files to your project.
 
 ```
-ascii_io.c  ascii_io.h
-pmath.c     pmath.h
+portable_types.h
+ascii_io.c   ascii_io.h
+pmath.c      pmath.h
+cbuf.c       cbuf.h
 ```
 
 ```sh
 # GCC desktop (quick sanity check)
-gcc -std=c99 -Wall main.c pmath.c ascii_io.c -o myapp
+gcc -std=c99 -Wall main.c pmath.c ascii_io.c cbuf.c -o myapp
 
 # Float mode
-gcc -std=c99 -Wall -DPMATH_USE_FLOAT main.c pmath.c ascii_io.c -o myapp
+gcc -std=c99 -Wall -DPMATH_USE_FLOAT main.c pmath.c ascii_io.c cbuf.c -o myapp
 
 # AVR
 avr-gcc -std=c99 -mmcu=atmega328p -Os \
     -DASCII_NO_FLOAT -DASCII_NO_INPUT \
-    main.c pmath.c ascii_io.c -o myapp.elf
+    main.c pmath.c ascii_io.c cbuf.c -o myapp.elf
 
 # SDCC Z80
 sdcc --std-c99 -mz80 \
     -DASCII_NO_FLOAT -DASCII_NO_INPUT \
-    main.c pmath.c ascii_io.c
+    main.c pmath.c ascii_io.c cbuf.c
 
 # CMOC 6809 -- no float subsystem at all
 cmoc -DASCII_NO_FLOAT -DPMATH_NO_FP_CONST \
-    main.c pmath.c ascii_io.c
+    main.c pmath.c ascii_io.c cbuf.c
+
+# Old toolchain without stdint.h
+gcc -std=c99 -DPORTABLE_NO_STDINT main.c pmath.c ascii_io.c cbuf.c -o myapp
 ```
 
 ---
 
 ## Standards and compatibility
 
-`ascii_io` is ANSI C89/C90. `pmath` requires C99 for `int32_t` and the
-union type-pun in the float sqrt. If you're on a pre-C99 toolchain with no
-float support at all, define `PMATH_NO_SQRT`, `PMATH_NO_FP_CONST`, and
-`ASCII_NO_FLOAT` — the fixed-point arithmetic core and `pm_print` will
-compile cleanly.
+`portable_types.h`, `ascii_io`, and `cbuf` are ANSI C89/C90. `pmath` requires
+C99 for `int32_t`/`uint32_t` and the union type-pun in the float sqrt. If
+you're on a pre-C99 toolchain with no float support at all, define
+`PMATH_NO_SQRT`, `PMATH_NO_FP_CONST`, and `ASCII_NO_FLOAT` — the fixed-point
+arithmetic core and `pm_print` will compile cleanly.
+
+If your toolchain lacks `<stdint.h>` entirely, define `PORTABLE_NO_STDINT`.
+The fallback typedefs in `portable_types.h` cover everything the family needs.
 
 See the [full reference](portable_libs.md) for the complete API, all
 flag combinations, and implementation notes.
@@ -258,13 +352,24 @@ flag combinations, and implementation notes.
 
 ## License
 
+MIT License
 
+Copyright (c) 2025 David
 
-Copyright 2026 David Collins
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the “Software”), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

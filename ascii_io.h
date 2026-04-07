@@ -10,18 +10,32 @@
  * and beyond (exact to ~16.7M, range to ~3.4e38).
  *
  * -----------------------------------------------------------------------
+ * INCLUDE ORDER
+ * -----------------------------------------------------------------------
+ *  Always include portable_types.h first, or let this header pull it in:
+ *
+ *    #include "ascii_io.h"    -- portable_types.h included automatically
+ *
+ *  When using with pmath.h and cbuf.h:
+ *    #include "ascii_io.h"    -- first: defines ASCII_PUTC hook
+ *    #include "pmath.h"       -- second
+ *    #include "cbuf.h"        -- third
+ *
+ * -----------------------------------------------------------------------
  * FEATURE DROP FLAGS  (define before including to shrink the binary)
  * -----------------------------------------------------------------------
- *  ASCII_NO_FLOAT   -- omit all float support (ascii_put_f32)
- *                      Safe to set when using pmath in fixed-point mode.
- *                      Must NOT be set when PMATH_USE_FLOAT is defined;
+ *  ASCII_NO_FLOAT   -- omit all float support (ascii_put_f32).
+ *                      Safe when using pmath in fixed-point mode.
+ *                      Must NOT be set when PMATH_USE_FLOAT is active;
  *                      pmath.h will emit a #error if both are active.
  *  ASCII_NO_BCD     -- omit packed-BCD output
  *  ASCII_NO_INPUT   -- omit all input and parse functions
- *  ASCII_NO_STDINT  -- omit <stdint.h>; you supply the fallback typedefs
- *                      (see PORTABLE_TYPES_DEFINED note below)
  *  ASCII_CRLF       -- ascii_nl() emits CR+LF instead of LF only
  *  ASCII_GETS_ECHO  -- ascii_gets() echoes characters as typed
+ *
+ *  Integer types are provided by portable_types.h.  To suppress
+ *  <stdint.h> on toolchains that lack it, define PORTABLE_NO_STDINT
+ *  and supply the fallback typedefs via portable_types.h.
  *
  * -----------------------------------------------------------------------
  * PLATFORM HOOKS  (define in your platform .c file)
@@ -34,10 +48,14 @@
  *  #define ASCII_PUTC(c)   my_uart_tx(c)
  *  #define ASCII_GETC()    my_uart_rx()
  *
+ * To route all ascii_io output through cbuf, define before including:
+ *  #define ASCII_PUTC(c)   cbuf_putc((uint8_t)(c))
+ *  Note: cast to uint8_t is required for correct high-byte handling.
+ *
  * -----------------------------------------------------------------------
  * K&R PORTING NOTES
  * -----------------------------------------------------------------------
- *  - Define ASCII_NO_STDINT and provide typedefs manually
+ *  - Define PORTABLE_NO_STDINT and provide typedefs in portable_types.h
  *  - Remove the extern prototypes; declare them K&R style in each .c
  *  - Replace ASCII_CONST with nothing (K&R has no const)
  *  - Remove the __cplusplus guards if your preprocessor rejects them
@@ -50,41 +68,13 @@
 extern "C" {
 #endif
 
+#include "portable_types.h"
+
 /* const compatibility --------------------------------------------------- */
 #ifdef __STDC__
 #  define ASCII_CONST const
 #else
 #  define ASCII_CONST
-#endif
-
-/* -----------------------------------------------------------------------
- * INTEGER TYPES
- *
- * PORTABLE_TYPES_DEFINED is a shared sentinel used by both ascii_io.h and
- * pmath.h.  Whichever header is included first defines the types; the
- * second skips its block entirely, preventing redefinition errors when
- * both ASCII_NO_STDINT and PMATH_NO_STDINT are set in the same build.
- * ----------------------------------------------------------------------- */
-#ifndef PORTABLE_TYPES_DEFINED
-#  define PORTABLE_TYPES_DEFINED
-#  ifndef ASCII_NO_STDINT
-#    include <stdint.h>
-#  else
-     /* Adjust for your platform if the defaults are wrong. */
-     typedef unsigned char  uint8_t;
-     typedef signed   char  int8_t;
-     typedef unsigned short uint16_t;
-     typedef signed   short int16_t;
-#  endif
-#endif
-
-/* NULL without stddef.h ------------------------------------------------- */
-#ifndef NULL
-#  ifdef __cplusplus
-#    define NULL 0
-#  else
-#    define NULL ((void *)0)
-#  endif
 #endif
 
 /* Output hook ----------------------------------------------------------- */
@@ -105,17 +95,16 @@ extern char ascii_getc(void);
  * STRING OUTPUT
  * ======================================================================= */
 
-void ascii_puts(ASCII_CONST char *s);        /* NUL-terminated, NULL-safe  */
-void ascii_putn(ASCII_CONST char *s, uint8_t n); /* exactly n bytes        */
-void ascii_nl(void);                         /* LF, or CR+LF if ASCII_CRLF */
+void ascii_puts(ASCII_CONST char *s);            /* NUL-terminated, NULL-safe  */
+void ascii_putn(ASCII_CONST char *s, uint8_t n); /* exactly n bytes            */
+void ascii_nl(void);                             /* LF, or CR+LF if ASCII_CRLF */
 
 /* =======================================================================
  * HEX OUTPUT  (zero-padded, uppercase)
  * ======================================================================= */
 
-void ascii_put_x8 (uint8_t  v);   /* "FF"   */
-void ascii_put_x16(uint16_t v);   /* "FFFF" */
-
+void ascii_put_x8 (uint8_t  v);   /* "FF"     */
+void ascii_put_x16(uint16_t v);   /* "FFFF"   */
 void ascii_put_x8p (uint8_t  v);  /* "0xFF"   */
 void ascii_put_x16p(uint16_t v);  /* "0xFFFF" */
 
@@ -130,7 +119,7 @@ void ascii_put_u16(uint16_t v);   /*   0..65535 */
  * SIGNED DECIMAL OUTPUT
  * ======================================================================= */
 
-void ascii_put_i8 (int8_t  v);    /* -128..127   */
+void ascii_put_i8 (int8_t  v);    /* -128..127     */
 void ascii_put_i16(int16_t v);    /* -32768..32767 */
 
 /* =======================================================================
@@ -170,11 +159,6 @@ void ascii_put_bcd16(uint16_t v);
 
 #ifndef ASCII_NO_INPUT
 
-/*
- * Read up to (maxlen-1) chars, NUL-terminate, return char count.
- * Stops on CR or LF.  Handles backspace / DEL (0x7F).
- * Define ASCII_GETS_ECHO to echo each character as typed.
- */
 uint8_t ascii_gets(char *buf, uint8_t maxlen);
 
 /* =======================================================================
@@ -200,8 +184,7 @@ uint8_t ascii_parse_x16(ASCII_CONST char *s, uint16_t *out);
  *
  * Skips leading spaces and tabs.
  * Reads until a character that does not belong to the number; that
- * terminating character is consumed (usually CR/LF -- harmless on a
- * line-oriented terminal).
+ * terminating character is consumed (usually CR/LF).
  * Returns 1 on success, 0 on failure.
  * ======================================================================= */
 

@@ -3,16 +3,18 @@
  * Standard : C99 (int32_t/uint32_t required; union type-pun defined by C99)
  * Targets  : Z80, AVR, 6809, RP2040, and other 8/16-bit systems
  *
- * Companion to ascii_io.h.  Include ascii_io.h before this header so that
- * the PORTABLE_TYPES_DEFINED sentinel (see below) resolves correctly.
+ * -----------------------------------------------------------------------
+ * INCLUDE ORDER
+ * -----------------------------------------------------------------------
+ *  #include "ascii_io.h"   -- first: defines ASCII_PUTC hook
+ *  #include "pmath.h"      -- second
+ *  #include "cbuf.h"       -- third (if used)
  *
  * -----------------------------------------------------------------------
  * FEATURE DROP FLAGS  (define before including to shrink the binary)
  * -----------------------------------------------------------------------
  *  PMATH_NO_TRIG    -- omit sin/cos (saves ~200 bytes ROM in fixed mode)
  *  PMATH_NO_SQRT    -- omit sqrt
- *  PMATH_NO_STDINT    -- omit <stdint.h>; you supply the fallback typedefs
- *                        (see PORTABLE_TYPES_DEFINED note below)
  *  PMATH_NO_FP_CONST -- replace all float literals in constant definitions
  *                        with pre-computed Q8.8 integer literals.
  *                        Use when the toolchain has no float type at all
@@ -22,6 +24,10 @@
  *                        pre-scaled integer value directly.
  *                        Only correct for PMATH_FRAC_BITS=8 (Q8.8).
  *                        For other FRAC_BITS supply your own constants.
+ *
+ *  Integer types are provided by portable_types.h.  To suppress
+ *  <stdint.h> on toolchains that lack it, define PORTABLE_NO_STDINT
+ *  before including any library header.
  *
  * -----------------------------------------------------------------------
  * MODE FLAG
@@ -57,26 +63,24 @@
  *  All angle arguments are radians expressed in the current num_t format.
  *
  * -----------------------------------------------------------------------
- * K&R / C89 PORTING NOTE
+ * C99 REQUIREMENT NOTE
  * -----------------------------------------------------------------------
- *  This library requires C99 minimum.  It uses int32_t / uint32_t from
- *  <stdint.h> in its inline arithmetic, and the float sqrt relies on
- *  union type-punning which is defined behaviour only in C99 (section
- *  6.5.2.3).  If your toolchain predates C99, define PMATH_NO_SQRT and
- *  supply your own sqrt, and avoid the pm_deg2rad / pm_rad2deg helpers.
- *  All other fixed-point arithmetic compiles cleanly under strict C89 if
- *  you also define PMATH_NO_STDINT and provide the typedefs manually.
+ *  This library requires C99 minimum.  It uses int32_t / uint32_t and
+ *  the float sqrt relies on union type-punning which is defined behaviour
+ *  only in C99 (section 6.5.2.3).  If your toolchain predates C99,
+ *  define PMATH_NO_SQRT and avoid pm_deg2rad / pm_rad2deg.  All other
+ *  fixed-point arithmetic compiles cleanly under strict C89.
  *
  * -----------------------------------------------------------------------
  * QUICK START
  * -----------------------------------------------------------------------
- *  #include "ascii_io.h"   // always first -- resolves shared sentinel
+ *  #include "ascii_io.h"
  *  #include "pmath.h"
  *
- *  num_t a = PM_F(1.5);            // float literal -> num_t
- *  num_t b = pm_mul(a, PM_PI);     // fixed: shifts correctly; float: *
- *  num_t s = pm_sin(PM_HALF_PI);   // 1.0 in current format
- *  pm_print(s, 4);                 // prints "1.0000" in either mode
+ *  num_t a = PM_F(1.5f);           -- float literal to num_t
+ *  num_t b = pm_mul(a, PM_PI);     -- fixed: 32-bit shift; float: plain *
+ *  num_t s = pm_sin(PM_HALF_PI);   -- 1.0 in current format
+ *  pm_print(s, 4);                 -- prints "1.0000" in either mode
  */
 
 #ifndef PMATH_H
@@ -87,8 +91,7 @@ extern "C" {
 #endif
 
 /* -----------------------------------------------------------------------
- * FLOAT / STDINT CONFLICT GUARD
- * Catch the invalid combination before anything else is processed.
+ * CONFLICT GUARD
  * ----------------------------------------------------------------------- */
 #if defined(PMATH_USE_FLOAT) && defined(ASCII_NO_FLOAT)
 #  error "PMATH_USE_FLOAT requires ascii_put_f32(): do not define ASCII_NO_FLOAT."
@@ -97,40 +100,12 @@ extern "C" {
 
 /* -----------------------------------------------------------------------
  * INTEGER TYPES
- *
- * PORTABLE_TYPES_DEFINED is a shared sentinel used by both ascii_io.h and
- * pmath.h.  Whichever header is included first defines the types; the
- * second skips its block entirely, preventing redefinition errors when
- * both ASCII_NO_STDINT and PMATH_NO_STDINT are set in the same build.
- *
- * Recommended include order: ascii_io.h first, then pmath.h.
- * pmath.h needs int32_t / uint32_t which ascii_io.h does not define in
- * its manual fallback (ascii_io is 8/16-bit only).  If pmath.h is
- * included first without stdint.h, the manual block here covers all six
- * types.  If ascii_io.h is first with its manual block, pmath.h will not
- * redefine types -- ensure int32_t / uint32_t are provided some other way.
  * ----------------------------------------------------------------------- */
-#ifndef PORTABLE_TYPES_DEFINED
-#  define PORTABLE_TYPES_DEFINED
-#  ifndef PMATH_NO_STDINT
-#    include <stdint.h>
-#  else
-     /* Adjust for your platform if the defaults are wrong.              */
-     /* int32_t / uint32_t are required for fixed-point intermediates    */
-     /* and for the float sqrt bit-manipulation.                         */
-     typedef unsigned char   uint8_t;
-     typedef signed   char   int8_t;
-     typedef unsigned short  uint16_t;
-     typedef signed   short  int16_t;
-     typedef unsigned long   uint32_t;  /* must be exactly 32 bits       */
-     typedef signed   long   int32_t;   /* must be exactly 32 bits       */
-#  endif
-#endif
+#include "portable_types.h"
 
 /* -----------------------------------------------------------------------
  * INLINE PORTABILITY
  * ----------------------------------------------------------------------- */
-
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
 #  define PM_INLINE static inline
 #else
@@ -140,7 +115,6 @@ extern "C" {
 /* -----------------------------------------------------------------------
  * FIXED-POINT CONFIGURATION
  * ----------------------------------------------------------------------- */
-
 #ifndef PMATH_FRAC_BITS
 #  define PMATH_FRAC_BITS  8
 #endif
@@ -203,14 +177,14 @@ typedef int16_t fixed_t;
 /* =======================================================================
  * LITERAL HELPER
  *
- * PM_F(x) converts a float constant to num_t.
+ * PM_F(x) converts a compile-time float constant to num_t.
  *
  * Float mode:  plain cast, no overhead.
  * Fixed mode:  float multiply at compile time -- requires float literals.
- * No-float mode (PMATH_NO_FP_CONST): PM_F() is disabled.  Use PM_RAW(x)
- *   instead and supply the pre-scaled Q8.8 integer directly.
- *   e.g.  PM_F(3.5f)  -->  PM_RAW(896)   (3.5 * 256 = 896)
- *         PM_F(0.25f) -->  PM_RAW(64)    (0.25 * 256 = 64)
+ * No-float mode (PMATH_NO_FP_CONST): PM_F() is undefined.  Use PM_RAW(x)
+ *   and supply the pre-scaled Q8.8 integer directly:
+ *     PM_F(3.5f)  -->  PM_RAW(896)    (3.5 * 256 = 896)
+ *     PM_F(0.25f) -->  PM_RAW(64)     (0.25 * 256 = 64)
  *
  * Use for initialisation only -- not inside inner loops on 8-bit targets.
  * Rounding is half-away-from-zero for positive and negative values.
@@ -220,12 +194,8 @@ typedef int16_t fixed_t;
 #  define PM_F(x)    ((num_t)(x))
 #  define PM_RAW(x)  ((num_t)(x))
 #elif defined(PMATH_NO_FP_CONST)
-/* Float literals are not available -- PM_F() would silently truncate.
- * PM_RAW takes the pre-scaled integer value directly.                    */
+/* PM_F intentionally undefined -- any use gives a compile error.         */
 #  define PM_RAW(x)  ((fixed_t)(x))
-/* PM_F is intentionally not defined.  If your code uses PM_F() and
- * PMATH_NO_FP_CONST is set you will get a compile error, which is the
- * correct behaviour -- replace each PM_F() call with PM_RAW().           */
 #else
 #  define PM_F(x)    ((num_t)((int32_t)((x) * PM_SCALE + ((x) < 0.0f ? -0.5f : 0.5f))))
 #  define PM_RAW(x)  ((fixed_t)(x))
@@ -261,7 +231,7 @@ typedef int16_t fixed_t;
 #  define pm_itof(x)  ((num_t)((fixed_t)(int16_t)(x) << PMATH_FRAC_BITS))
 #endif
 
-/* num_t <-> float  (debug / init bridge; avoid in inner loops on 8-bit) */
+/* num_t <-> float  (debug/init bridge; avoid in inner loops on 8-bit)   */
 #ifdef PMATH_USE_FLOAT
 #  define pm_to_float(x)    ((float)(x))
 #  define pm_from_float(x)  ((num_t)(x))
@@ -300,11 +270,9 @@ PM_INLINE num_t pm_ceil(num_t x) {
     return (num_t)(i + (x > (num_t)i ? 1 : 0));
 }
 #else
-/* Mask off fractional bits -> floor. */
 PM_INLINE num_t pm_floor(num_t x) {
     return (fixed_t)(x & (fixed_t)~PM_FRAC_MASK);
 }
-/* Add (SCALE-1) before masking: carries into the integer part if frac != 0. */
 PM_INLINE num_t pm_ceil(num_t x) {
     return (fixed_t)((x + PM_FRAC_MASK) & (fixed_t)~PM_FRAC_MASK);
 }
@@ -327,9 +295,6 @@ PM_INLINE num_t pm_lerp(num_t a, num_t b, num_t t) {
  * ANGLE HELPERS
  * ======================================================================= */
 
-/* Wrap radians to [0, 2*pi).
- * Subtraction loop avoids division -- suitable when angles are already
- * near-range, as is typical in animation / rotation on small systems.   */
 PM_INLINE num_t pm_wrap_angle(num_t x) {
     while (x < PM_ZERO)    x = (num_t)(x + PM_TWO_PI);
     while (x >= PM_TWO_PI) x = (num_t)(x - PM_TWO_PI);
@@ -337,17 +302,10 @@ PM_INLINE num_t pm_wrap_angle(num_t x) {
 }
 
 /* Degrees <-> radians.
- *
- * Fixed-point range note:
- *   deg2rad: input limited by Q format (Q8.8 max ~127 degrees).
- *   rad2deg: output limited; results above the format max will wrap.
- *            For Q8.8 this means angles above ~127 degrees overflow.
- *            Use PMATH_USE_FLOAT for full 0-360 degree arithmetic.
- *
- * Multiplying by the small constant pi/180 directly is avoided: in Q8.8
- * it rounds to 4/256 = 0.01562, a 10% error.  Instead both functions
- * compute via PM_PI which is already rounded correctly for the format.  */
-
+ * Fixed-point range: Q8.8 max ~127 degrees.  rad2deg output > ~127 wraps.
+ * Use PMATH_USE_FLOAT for full 0-360 degree arithmetic.
+ * Multiplying by pi/180 directly is avoided -- in Q8.8 it rounds to
+ * 4/256 = 0.01562, a 10% error.  PM_PI is already correctly rounded.    */
 #ifdef PMATH_USE_FLOAT
 #  define pm_deg2rad(d)  ((d) * 0.01745329f)
 #  define pm_rad2deg(r)  ((r) * 57.2957795f)
@@ -368,17 +326,9 @@ PM_INLINE num_t pm_rad2deg(num_t r) {
 
 /*
  * pm_print(v, decimals) -- print a num_t value via ascii_io.
- *
  * Float mode:  delegates to ascii_put_f32(v, decimals).
- *              ASCII_NO_FLOAT must not be set (enforced by #error above).
- *
- * Fixed mode:  digit-by-digit integer arithmetic only.
- *              Does NOT use ascii_put_f32; ASCII_NO_FLOAT is safe.
- *              Precision is limited by the Q format (~2.4 significant
- *              decimal digits for Q8.8; requesting more prints correctly
- *              but the last digits will be zero-noise below the LSB).
- *              Range note: INT16_MIN (-32768) negated is UB; values at
- *              the format minimum should be avoided or clamped by caller.
+ * Fixed mode:  pure integer arithmetic, no float required.
+ *              ASCII_NO_FLOAT is safe in fixed mode.
  */
 void pm_print(num_t v, uint8_t decimals);
 
